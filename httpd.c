@@ -1,10 +1,15 @@
 #define _GNU_SOURCE
 
+#include <sys/types.h>
+#include <sys/wait.h>
+
 #include <netinet/in.h>
 
 #include <arpa/inet.h>
 #include <getopt.h>
 #include <pthread.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -15,6 +20,7 @@
 #include <unistd.h>
 
 #include "httpd_common.h"
+#include "httpd_serve.h"
 
 static void
 httpd_syslog(int severity, const char *fmt, ...)
@@ -49,6 +55,7 @@ struct httpd_cfg {
 	int uid;
 	int gid;
 	int port;
+	int nworkers;
 	bool foreground;
 };
 
@@ -57,13 +64,14 @@ print_usage(void)
 {
 	fprintf(stderr,
 	    "USAGE: httpd [-f] [-r path] [-u uid] [-g gid]\n"
-	    "	      [-l addr] [-p port]\n"
+	    "	      [-l addr] [-p port] [-w nworkers]\n"
 	    "  -f	    run in foreground\n"
-	    "  -r path  set path to root directory\n"
-	    "  -u uid   set uid of httpd user\n"
-	    "  -g gid   set gid of httpd group\n"
-	    "  -l addr  set listen address\n"
-	    "  -p port  set listen port\n");
+	    "  -r path	    set path to root directory\n"
+	    "  -u uid	    set uid of httpd user\n"
+	    "  -g gid	    set gid of httpd group\n"
+	    "  -l addr	    set listen address\n"
+	    "  -p port	    set listen port\n"
+	    "  -w nworkers  set number of workers\n");
 }
 
 static int
@@ -71,7 +79,7 @@ parse_args(int argc, char *argv[], struct httpd_cfg *cfg)
 {
 	bzero(cfg, sizeof(struct httpd_cfg));
 	int opt;
-	while ((opt = getopt(argc, argv, "fr:u:g:l:p:")) != -1)
+	while ((opt = getopt(argc, argv, "fr:u:g:l:p:w:")) != -1)
 		switch (opt) {
 		case 'f':
 			cfg->foreground = true;
@@ -90,6 +98,9 @@ parse_args(int argc, char *argv[], struct httpd_cfg *cfg)
 			break;
 		case 'p':
 			cfg->port = atoi(optarg);
+			break;
+		case 'w':
+			cfg->nworkers = atoi(optarg);
 			break;
 		default:
 			print_usage();
@@ -176,7 +187,7 @@ do_bind(struct httpd_cfg const *cfg)
 	}
 
 	if (bind(sfd, (struct sockaddr *)&sa, sizeof(sa)) == -1) {
-		error("do_bind: bind failed: '%m'"); 
+		error("do_bind: bind failed: '%m'");
 		close(sfd);
 		return -1;
 	}
@@ -210,23 +221,138 @@ do_secure(struct httpd_cfg const *cfg)
 	return 0;
 }
 
+static pid_t
+do_spawn(int sfd)
+{
+	(void)sfd;
+	pid_t pid = fork();
+	if (pid == 0) {
+		signal(SIGINT, SIG_DFL);
+		signal(SIGTERM, SIG_DFL);
+		signal(SIGQUIT, SIG_DFL);
+		httpd_serve(sfd);
+	}
+	if (pid == -1) {
+		error("do_spawn: fork failed: '%m'");
+		return -1;
+	}
+	info("do_spawn: spawn new worker %d", pid);
+	return pid;
+}
+
+static int
+do_workers(int sfd, struct httpd_cfg const *cfg, pid_t **children)
+{
+	*children = malloc(sizeof(pid_t) * cfg->nworkers);
+
+	for (int i = 0; i < cfg->nworkers; ++i) {
+		(*children)[i] = do_spawn(sfd);
+	}
+
+	return 0;
+}
+
+static sigjmp_buf shutdown_jmp_buf;
+static bool in_shutdown = false;
+
+static void
+sig_shutdown(int sig)
+{
+	if (in_shutdown == false) {
+		in_shutdown = true;
+		info("caught signal %d (%s), shutting down", sig,
+		    strsignal(sig));
+		siglongjmp(shutdown_jmp_buf, 1);
+	}
+}
+
+static int
+do_loop(int sfd, struct httpd_cfg const *cfg, pid_t *children)
+{
+	if (sigsetjmp(shutdown_jmp_buf, 1)) {
+		for (int i = 0; i < cfg->nworkers; ++i) {
+			if (children[i] != -1) {
+				warn("do_loop: terminate %d", children[i]);
+				kill(children[i], SIGTERM);
+			}
+		}
+		return 0;
+	}
+
+	signal(SIGTERM, sig_shutdown);
+	signal(SIGINT, sig_shutdown);
+	signal(SIGQUIT, sig_shutdown);
+
+	for (;;) {
+		pid_t child;
+		int status;
+
+		if ((child = wait(&status)) == -1) {
+			error("do_loop: wait failed: '%m'");
+			return -1;
+		}
+
+		if (WIFEXITED(status)) {
+			warn("do_loop: %d exited with code %d", child,
+			    WEXITSTATUS(status));
+		} else if (WIFSIGNALED(status)) {
+			warn("do_loop: %d signaled with signal %d", child,
+			    WTERMSIG(status));
+		} else {
+			warn("do_loop: %d exited in uncommon way", child);
+		}
+
+		for (int i = 0; i < cfg->nworkers; ++i) {
+			if (children[i] == child) {
+				if ((children[i] = do_spawn(sfd)) == -1) {
+					error("do_loop: spawn failed");
+				}
+			}
+		}
+	}
+
+	/*
+	 * NOT REACHABLE
+	 */
+	fatal("do_loop: dead end");
+}
+
+static int
+do_shutdown(int sfd, struct httpd_cfg const *cfg)
+{
+	close(sfd);
+	free(cfg->address);
+	free(cfg->rootdir);
+	return 0;
+}
+
 int
 main(int argc, char *argv[])
 {
 	struct httpd_cfg cfg;
 	int sfd = -1;
+	pid_t *children = NULL;
+
 	if (parse_args(argc, argv, &cfg) == -1)
 		return 1;
 	if (do_logging(&cfg) == -1)
 		return 1;
 	if (do_daemon(&cfg) == -1)
 		return 1;
-	ok("httpd starting (built on " __DATE__" " __TIME__ ")");
+	ok("httpd starting (built on " __DATE__ " " __TIME__ ")");
 	if ((sfd = do_bind(&cfg)) == -1)
 		return 1;
 	if (do_chroot(&cfg) == -1)
 		return 1;
 	if (do_secure(&cfg) == -1)
 		return 1;
+	if (do_workers(sfd, &cfg, &children) == -1)
+		return 1;
+	ok("shields up, weapons armed - going live");
+	if (do_loop(sfd, &cfg, children) == -1)
+		return 1;
+	if (do_shutdown(sfd, &cfg) == -1)
+		return 1;
+	ok("bye bye...");
 	return 0;
 }
