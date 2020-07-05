@@ -1,3 +1,4 @@
 *.o
 *.d
 httpd
+.gdb_history
