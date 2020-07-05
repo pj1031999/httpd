@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 
+#include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 
@@ -7,7 +8,6 @@
 
 #include <arpa/inet.h>
 #include <getopt.h>
-#include <pthread.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -34,16 +34,12 @@ httpd_syslog(int severity, const char *fmt, ...)
 static void
 httpd_stderr(__unused int severity, const char *fmt, ...)
 {
-	static pthread_mutex_t mux = PTHREAD_MUTEX_INITIALIZER;
-
 	va_list args;
 	va_start(args, fmt);
-	pthread_mutex_lock(&mux);
 
 	vfprintf(stderr, fmt, args);
 	fputc('\n', stderr);
 
-	pthread_mutex_unlock(&mux);
 	va_end(args);
 }
 
@@ -56,30 +52,45 @@ struct httpd_cfg {
 	int gid;
 	int port;
 	int nworkers;
+	int backlog;
 	bool foreground;
 };
 
-static void
+static inline void
+httpd_cfg_init(struct httpd_cfg *cfg)
+{
+	bzero(cfg, sizeof(struct httpd_cfg));
+	/* By default listen on port 8080. */
+	cfg->port = 8080;
+	/* By default run only one worker. */
+	cfg->nworkers = 1;
+	/* Since Linux 5.4, the default value for backlog is 4096. */
+	cfg->backlog = 4096;
+}
+
+static inline void
 print_usage(void)
 {
 	fprintf(stderr,
 	    "USAGE: httpd [-f] [-r path] [-u uid] [-g gid]\n"
-	    "	      [-l addr] [-p port] [-w nworkers]\n"
+	    "	      [-l addr] [-p port] [-w nworkers] [-b backlog]\n"
 	    "  -f	    run in foreground\n"
 	    "  -r path	    set path to root directory\n"
 	    "  -u uid	    set uid of httpd user\n"
 	    "  -g gid	    set gid of httpd group\n"
 	    "  -l addr	    set listen address\n"
 	    "  -p port	    set listen port\n"
-	    "  -w nworkers  set number of workers\n");
+	    "  -w nworkers  set number of workers\n"
+	    "  -b backlog   set backlog size\n");
 }
 
 static int
 parse_args(int argc, char *argv[], struct httpd_cfg *cfg)
 {
-	bzero(cfg, sizeof(struct httpd_cfg));
+	httpd_cfg_init(cfg);
+
 	int opt;
-	while ((opt = getopt(argc, argv, "fr:u:g:l:p:w:")) != -1)
+	while ((opt = getopt(argc, argv, "fr:u:g:l:p:w:b:")) != -1)
 		switch (opt) {
 		case 'f':
 			cfg->foreground = true;
@@ -102,6 +113,9 @@ parse_args(int argc, char *argv[], struct httpd_cfg *cfg)
 		case 'w':
 			cfg->nworkers = atoi(optarg);
 			break;
+		case 'b':
+			cfg->backlog = atoi(optarg);
+			break;
 		default:
 			print_usage();
 			return -1;
@@ -115,7 +129,7 @@ parse_args(int argc, char *argv[], struct httpd_cfg *cfg)
 	return 0;
 }
 
-static int
+static inline int
 do_logging(struct httpd_cfg const *cfg)
 {
 	if (cfg->foreground == false) {
@@ -152,7 +166,7 @@ do_chroot(struct httpd_cfg const *cfg)
 		return -1;
 	}
 
-	info("do_chroot: chrooting done");
+	info("do_chroot: done");
 	return 0;
 }
 
@@ -192,8 +206,38 @@ do_bind(struct httpd_cfg const *cfg)
 		return -1;
 	}
 
-	info("do_bind: binding done...");
+	info("do_bind: done");
 	return sfd;
+}
+
+static int
+do_listen(int sfd, struct httpd_cfg const *cfg)
+{
+	if (listen(sfd, cfg->backlog) == -1)
+		return -1;
+	return 0;
+}
+
+static int
+do_epoll(int sfd)
+{
+	int efd;
+	struct epoll_event ev;
+
+	if ((efd = epoll_create1(0)) == -1) {
+		error("do_epoll: epoll_create failed: '%m'");
+		return -1;
+	}
+
+	ev.events = EPOLLIN;
+	ev.data.fd = sfd;
+	if (epoll_ctl(efd, EPOLL_CTL_ADD, sfd, &ev) == -1) {
+		error("do_epoll: epoll_ctl failed: '%m'");
+		return -1;
+	}
+
+	info("do_epoll: done");
+	return efd;
 }
 
 static int
@@ -217,12 +261,12 @@ do_secure(struct httpd_cfg const *cfg)
 		warn("do_secure: uid is not specified");
 	}
 
-	info("do_secure: done...");
+	info("do_secure: done");
 	return 0;
 }
 
 static pid_t
-do_spawn(int sfd)
+do_spawn(int sfd, int efd)
 {
 	(void)sfd;
 	pid_t pid = fork();
@@ -230,25 +274,26 @@ do_spawn(int sfd)
 		signal(SIGINT, SIG_DFL);
 		signal(SIGTERM, SIG_DFL);
 		signal(SIGQUIT, SIG_DFL);
-		httpd_serve(sfd);
+		httpd_serve(sfd, efd);
 	}
 	if (pid == -1) {
 		error("do_spawn: fork failed: '%m'");
 		return -1;
 	}
-	info("do_spawn: spawn new worker %d", pid);
+	info("do_spawn: %d spawned", pid);
 	return pid;
 }
 
 static int
-do_workers(int sfd, struct httpd_cfg const *cfg, pid_t **children)
+do_workers(int sfd, int efd, struct httpd_cfg const *cfg, pid_t **children)
 {
 	*children = malloc(sizeof(pid_t) * cfg->nworkers);
 
 	for (int i = 0; i < cfg->nworkers; ++i) {
-		(*children)[i] = do_spawn(sfd);
+		(*children)[i] = do_spawn(sfd, efd);
 	}
 
+	info("do_workers: done");
 	return 0;
 }
 
@@ -267,7 +312,7 @@ sig_shutdown(int sig)
 }
 
 static int
-do_loop(int sfd, struct httpd_cfg const *cfg, pid_t *children)
+do_loop(int sfd, int efd, struct httpd_cfg const *cfg, pid_t *children)
 {
 	if (sigsetjmp(shutdown_jmp_buf, 1)) {
 		for (int i = 0; i < cfg->nworkers; ++i) {
@@ -304,7 +349,7 @@ do_loop(int sfd, struct httpd_cfg const *cfg, pid_t *children)
 
 		for (int i = 0; i < cfg->nworkers; ++i) {
 			if (children[i] == child) {
-				if ((children[i] = do_spawn(sfd)) == -1) {
+				if ((children[i] = do_spawn(sfd, efd)) == -1) {
 					error("do_loop: spawn failed");
 				}
 			}
@@ -318,9 +363,10 @@ do_loop(int sfd, struct httpd_cfg const *cfg, pid_t *children)
 }
 
 static int
-do_shutdown(int sfd, struct httpd_cfg const *cfg)
+do_shutdown(int sfd, int efd, struct httpd_cfg const *cfg)
 {
 	close(sfd);
+	close(efd);
 	free(cfg->address);
 	free(cfg->rootdir);
 	return 0;
@@ -331,6 +377,7 @@ main(int argc, char *argv[])
 {
 	struct httpd_cfg cfg;
 	int sfd = -1;
+	int efd = -1;
 	pid_t *children = NULL;
 
 	if (parse_args(argc, argv, &cfg) == -1)
@@ -346,12 +393,16 @@ main(int argc, char *argv[])
 		return 1;
 	if (do_secure(&cfg) == -1)
 		return 1;
-	if (do_workers(sfd, &cfg, &children) == -1)
+	if (do_listen(sfd, &cfg) == -1)
+		return 1;
+	if ((efd = do_epoll(sfd)) == -1)
+		return 1;
+	if (do_workers(sfd, efd, &cfg, &children) == -1)
 		return 1;
 	ok("shields up, weapons armed - going live");
-	if (do_loop(sfd, &cfg, children) == -1)
+	if (do_loop(sfd, efd, &cfg, children) == -1)
 		return 1;
-	if (do_shutdown(sfd, &cfg) == -1)
+	if (do_shutdown(sfd, efd, &cfg) == -1)
 		return 1;
 	ok("bye bye...");
 	return 0;

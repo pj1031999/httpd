@@ -2,6 +2,7 @@
 #define _HTTPD_COMMON_
 
 #include <stdarg.h>
+#include <stdlib.h>
 #include <syslog.h>
 
 extern void (*httpd_log)(int severity, const char *fmt, ...);

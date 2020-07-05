@@ -3,6 +3,6 @@
 
 #include <stdnoreturn.h>
 
-noreturn void httpd_serve(int sfd);
+noreturn void httpd_serve(int sfd, int efd);
 
 #endif /* _HTTPD_SERVE_ */

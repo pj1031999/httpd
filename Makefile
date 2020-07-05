@@ -3,7 +3,7 @@ CC		:= gcc
 CPPFLAGS	:= -Wall -Wextra -Werror -DNDEBUG
 CFLAGS		:= -MMD -std=gnu18 -march=native -O3 -fomit-frame-pointer -pipe
 
-LDFLAGS		:= -Wl,-O3 -Wl,--as-needed -pthread -s
+LDFLAGS		:= -Wl,-O3 -Wl,--as-needed -s
 
 SRCS		:= httpd.c httpd_serve.c
 OBJS		:= $(subst .c,.o,$(SRCS))
