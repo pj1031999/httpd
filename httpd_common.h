@@ -13,11 +13,13 @@ extern void (*httpd_log)(int severity, const char *fmt, ...);
 #define warn(fmt, ...) httpd_log(LOG_WARNING, "-- " fmt, ##__VA_ARGS__)
 #define error(fmt, ...) httpd_log(LOG_ERR, "!! " fmt, ##__VA_ARGS__)
 
-#define fatal(fmt, ...)                    \
-	do {                               \
-		error(fmt, ##__VA_ARGS__); \
-		abort();                   \
-	} while (0)
+/* clang-format off */
+#define fatal(fmt, ...)                                                        \
+  do {                                                                         \
+    error(fmt, ##__VA_ARGS__);                                                 \
+    abort();                                                                   \
+  } while (0)
+/* clang-format on */
 
 #ifndef __unused
 #define __unused __attribute__((__unused__))

@@ -268,7 +268,6 @@ do_secure(struct httpd_cfg const *cfg)
 static pid_t
 do_spawn(int sfd, int efd)
 {
-	(void)sfd;
 	pid_t pid = fork();
 	if (pid == 0) {
 		signal(SIGINT, SIG_DFL);
