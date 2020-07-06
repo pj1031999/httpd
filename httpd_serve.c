@@ -81,7 +81,7 @@ httpd_extension(char const *path)
 	{
 		if (strcmp(cptr, *p) == 0)
 		{
-			return *p;
+			return *(p - 1);
 		}
 	}
 
