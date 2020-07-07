@@ -239,7 +239,7 @@ httpd_serve_http(int fd, char *buf, __unused int nbytes)
 	    strstr(buf, "HTTP/1.1") == NULL) {
 		warn("httpd_serve_http: not implemented");
 		httpd_serve_reply(fd, HTTP_NOT_IMPLEMENTED, NULL);
-		return 0;
+		return 1;
 	}
 
 	sscanf(getstr, "%*s %4096s", path);
@@ -267,9 +267,7 @@ httpd_serve_http(int fd, char *buf, __unused int nbytes)
 		return 1;
 	}
 
-	httpd_serve_file(fd, path);
-
-	return 0;
+	return httpd_serve_file(fd, path);
 }
 
 static void
