@@ -287,6 +287,7 @@ httpd_serve_fd(int fd)
 			}
 			warn("httpd_serve_fd: read failed: '%m'");
 			close(fd);
+			return;
 		}
 		buf[nbytes] = 0;
 
