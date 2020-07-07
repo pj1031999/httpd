@@ -174,6 +174,7 @@ static int
 do_bind(struct httpd_cfg const *cfg)
 {
 	int sfd;
+	int sockopt;
 	struct sockaddr_in sa;
 
 	if (cfg->address == NULL) {
@@ -188,6 +189,14 @@ do_bind(struct httpd_cfg const *cfg)
 
 	if ((sfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
 		error("do_bind: open socket failed: '%m'");
+		return -1;
+	}
+
+	sockopt = 1;
+	if (setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &sockopt,
+		sizeof(sockopt)) == -1) {
+		error("do_bind: setsockopt failed: '%m'");
+		close(sfd);
 		return -1;
 	}
 
@@ -314,12 +323,6 @@ static int
 do_loop(int sfd, int efd, struct httpd_cfg const *cfg, pid_t *children)
 {
 	if (sigsetjmp(shutdown_jmp_buf, 1)) {
-		for (int i = 0; i < cfg->nworkers; ++i) {
-			if (children[i] != -1) {
-				warn("do_loop: terminate %d", children[i]);
-				kill(children[i], SIGTERM);
-			}
-		}
 		return 0;
 	}
 
@@ -362,8 +365,31 @@ do_loop(int sfd, int efd, struct httpd_cfg const *cfg, pid_t *children)
 }
 
 static int
-do_shutdown(int sfd, int efd, struct httpd_cfg const *cfg)
+do_shutdown(int sfd, int efd, struct httpd_cfg const *cfg, pid_t *children)
 {
+	int nsig = 0;
+
+	shutdown(sfd, SHUT_RDWR);
+
+	for (int i = 0; i < cfg->nworkers; ++i) {
+		if (children[i] != -1) {
+			info("do_shutdown: terminate %d", children[i]);
+			kill(children[i], SIGTERM);
+			nsig++;
+		}
+	}
+
+	for (int i = 0; i < nsig; ++i) {
+		pid_t child;
+
+		if ((child = wait(NULL)) == -1) {
+			error("do_shutdown: wait failed: '%m'");
+			continue;
+		}
+
+		info("do_shutdown: %d terminated", child);
+	}
+
 	close(sfd);
 	close(efd);
 	free(cfg->address);
@@ -401,7 +427,7 @@ main(int argc, char *argv[])
 	ok("shields up, weapons armed - going live");
 	if (do_loop(sfd, efd, &cfg, children) == -1)
 		return 1;
-	if (do_shutdown(sfd, efd, &cfg) == -1)
+	if (do_shutdown(sfd, efd, &cfg, children) == -1)
 		return 1;
 	ok("bye bye...");
 	return 0;
