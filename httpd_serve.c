@@ -8,6 +8,7 @@
 
 #include <netinet/in.h>
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/limits.h>
@@ -167,6 +168,18 @@ httpd_serve_redirect(int fd, char const *uri)
 	return httpd_serve_reply(fd, HTTP_MOVED_PERMANENTLY, path);
 }
 
+static inline int
+is_dir(char const *path)
+{
+
+	DIR *dir;
+	if ((dir = opendir(path)) != NULL) {
+		closedir(dir);
+		return 1;
+	}
+	return 0;
+}
+
 static int
 httpd_serve_file(int fd, char const *path)
 {
@@ -201,7 +214,7 @@ httpd_serve_file(int fd, char const *path)
 		if ((sent = sendfile(fd, ffd, NULL, fsize)) == -1) {
 			if (errno == EAGAIN)
 				continue;
-			fatal("httpd_serve_file: failed: '%m");
+			fatal("httpd_serve_file: failed: '%m'");
 		}
 		fsize -= sent;
 	}
@@ -245,6 +258,12 @@ httpd_serve_http(int fd, char *buf, __unused int nbytes)
 
 	if (access(path, F_OK) == -1) {
 		httpd_serve_reply(fd, HTTP_NOT_FOUND, NULL);
+		return 1;
+	}
+
+	if (is_dir(path)) {
+		path[len] = '/';
+		httpd_serve_redirect(fd, path);
 		return 1;
 	}
 
