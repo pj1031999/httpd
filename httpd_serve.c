@@ -75,12 +75,13 @@ httpd_extension(char const *path)
 {
 	char const *cptr;
 
-	cptr = strrchr(path, '.');
+	if ((cptr = strrchr(path, '.')) == NULL) {
+		return "application/octet-stream";
+	}
 
-	for (char const * const *p = http_extension_map + 1; *p != NULL; p += 2)
-	{
-		if (strcmp(cptr, *p) == 0)
-		{
+	for (char const *const *p = http_extension_map + 1; *p != NULL;
+	     p += 2) {
+		if (strcmp(cptr, *p) == 0) {
 			return *(p - 1);
 		}
 	}
@@ -172,8 +173,9 @@ httpd_serve_file(int fd, char const *path)
 	char hbuf[BUF_SIZE + 1];
 	char const *cstr;
 	struct stat st;
-	off_t fsize;
 	int len;
+	int ffd;
+	off_t fsize;
 	ssize_t sent;
 
 	stat(path, &st);
@@ -191,7 +193,9 @@ httpd_serve_file(int fd, char const *path)
 
 	httpd_send(fd, hbuf, len);
 
-	int ffd = open(path, O_RDONLY);
+	if ((ffd = open(path, O_RDONLY)) == -1) {
+		return httpd_serve_reply(fd, HTTP_NOT_FOUND, NULL);
+	}
 
 	while (fsize > 0) {
 		if ((sent = sendfile(fd, ffd, NULL, fsize)) == -1) {
