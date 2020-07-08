@@ -317,9 +317,11 @@ httpd_serve_loop(int sfd, int efd)
 	struct sockaddr_in sa;
 	socklen_t sa_len = sizeof(sa);
 
-	nfds = epoll_wait(efd, evs, MAX_EVENTS, -1);
-
-	if (nfds == -1) {
+	if ((nfds = epoll_wait(efd, evs, MAX_EVENTS, -1)) == -1) {
+		if (errno == EINTR) {
+			debug("httpd_serve: epoll_wait interrupted; retry");
+			return;
+		}
 		fatal("httpd_serve: epoll_wait failed: '%m'");
 	}
 
