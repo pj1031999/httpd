@@ -24,7 +24,7 @@
 #define MAX_EVENTS 16
 
 /* clang-format off */
-__unused static char const *http_extension_map[] = {
+static char const *http_extension_map[] = {
 	"application/ogg",	".ogg",
 	"application/pdf",      ".pdf",
 	"application/wasm",     ".wasm",
@@ -52,7 +52,7 @@ enum {
 	HTTP_FORBIDDEN		    = 403,
 	HTTP_NOT_FOUND		    = 404,
 	HTTP_INTERNAL_SERVER_ERROR  = 500,
-	HTTP_NOT_IMPLEMENTED	    = 501
+	HTTP_NOT_IMPLEMENTED	    = 501,
 };
 
 struct http_code {
@@ -67,7 +67,7 @@ static const struct http_code codes[] = {
 	{ HTTP_NOT_FOUND,	      "Not Found"	      },
 	{ HTTP_INTERNAL_SERVER_ERROR, "Internal Server Error" },
 	{ HTTP_NOT_IMPLEMENTED,	      "Not Implemented"	      },
-	{ -1,			      NULL		      }
+	{ -1,			      NULL		      },
 };
 /* clang-format on */
 
