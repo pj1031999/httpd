@@ -394,6 +394,7 @@ do_shutdown(int sfd, int efd, struct httpd_cfg const *cfg, pid_t *children)
 	close(efd);
 	free(cfg->address);
 	free(cfg->rootdir);
+	free(children);
 	return 0;
 }
 
