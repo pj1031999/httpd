@@ -277,17 +277,41 @@ do_secure(struct httpd_cfg const *cfg)
 static pid_t
 do_spawn(int sfd, int efd)
 {
+	sigset_t new;
+	sigset_t orig;
+
+	if (sigfillset(&new) == -1) {
+		fatal("do_spawn: sigfillset failed: '%m'");
+	}
+
+	if (sigprocmask(SIG_SETMASK, &new, &orig) == -1) {
+		fatal("do_spawn: sigprocmask failed: '%m'");
+	}
+
 	pid_t pid = fork();
 	if (pid == 0) {
-		signal(SIGINT, SIG_DFL);
-		signal(SIGTERM, SIG_DFL);
-		signal(SIGQUIT, SIG_DFL);
+		if (signal(SIGINT, SIG_DFL) == SIG_ERR ||
+		    signal(SIGTERM, SIG_DFL) == SIG_ERR ||
+		    signal(SIGQUIT, SIG_DFL) == SIG_ERR) {
+			fatal("do_spawn: signal failed: '%m'");
+		}
+
+		if (sigprocmask(SIG_SETMASK, &orig, NULL) == -1) {
+			fatal("do_spawn: sigprocmask failed: '%m'");
+		}
+
 		httpd_serve(sfd, efd);
 	}
+
+	if (sigprocmask(SIG_SETMASK, &orig, NULL) == -1) {
+		fatal("do_spawn: sigprocmask failed: '%m'");
+	}
+
 	if (pid == -1) {
 		error("do_spawn: fork failed: '%m'");
 		return -1;
 	}
+
 	info("do_spawn: %d spawned", pid);
 	return pid;
 }
