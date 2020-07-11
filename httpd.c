@@ -37,10 +37,8 @@ httpd_stderr(__unused int severity, const char *fmt, ...)
 {
 	va_list args;
 	va_start(args, fmt);
-
 	vfprintf(stderr, fmt, args);
 	fputc('\n', stderr);
-
 	va_end(args);
 }
 
@@ -296,7 +294,7 @@ do_spawn(int sfd, int efd)
 		/*
 		 * NOT REACHABLE
 		 */
-		fatal("do_loop: dead end");
+		fatal("do_spawn: dead end");
 	}
 
 	info("do_spawn: %d spawned", pid);
@@ -306,7 +304,10 @@ do_spawn(int sfd, int efd)
 static int
 do_workers(int sfd, int efd, struct httpd_cfg const *cfg, pid_t **children)
 {
-	*children = malloc(sizeof(pid_t) * cfg->nworkers);
+	if ((*children = malloc(sizeof(pid_t) * cfg->nworkers)) == NULL) {
+		error("do_workers: failed");
+		return -1;
+	}
 
 	for (int i = 0; i < cfg->nworkers; ++i) {
 		(*children)[i] = do_spawn(sfd, efd);

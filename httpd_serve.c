@@ -276,9 +276,9 @@ httpd_serve_fd(int fd)
 	char buf[BUF_SIZE + 1];
 
 	for (;;) {
-		int nbytes = recv(fd, buf, BUF_SIZE, 0);
+		int nbytes;
 
-		if (nbytes == -1) {
+		if ((nbytes = recv(fd, buf, BUF_SIZE, 0)) == -1) {
 			if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				/*
 				 * Try again in the future.
@@ -328,8 +328,11 @@ httpd_serve_loop(int sfd, int efd)
 	for (int i = 0; i < nfds; ++i) {
 		/* New incoming connection. */
 		if (evs[i].data.fd == sfd) {
-			fd = accept4(sfd, (struct sockaddr *)&sa, &sa_len,
-			    SOCK_NONBLOCK);
+			if ((fd = accept4(sfd, (struct sockaddr *)&sa, &sa_len,
+				 SOCK_NONBLOCK)) == -1) {
+				error("httpd_serve: accept failed: '%m'");
+				continue;
+			}
 			ev.events = EPOLLIN | EPOLLET;
 			ev.data.fd = fd;
 			if (epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev) == -1) {
