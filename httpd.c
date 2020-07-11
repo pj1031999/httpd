@@ -19,6 +19,7 @@
 #include <syslog.h>
 #include <unistd.h>
 
+#include "clone.h"
 #include "httpd_common.h"
 #include "httpd_serve.h"
 
@@ -133,6 +134,7 @@ static inline int
 do_logging(struct httpd_cfg const *cfg)
 {
 	if (cfg->foreground == false) {
+		openlog("httpd", LOG_CONS | LOG_NDELAY | LOG_PID, LOG_DAEMON);
 		httpd_log = httpd_syslog;
 	}
 	return 0;
@@ -277,39 +279,24 @@ do_secure(struct httpd_cfg const *cfg)
 static pid_t
 do_spawn(int sfd, int efd)
 {
-	sigset_t new;
-	sigset_t orig;
+	pid_t pid;
+	struct clone_args args = {
+		.flags = CLONE_CLEAR_SIGHAND | CLONE_FILES | CLONE_FS,
+		.exit_signal = SIGCHLD,
+	};
 
-	if (sigfillset(&new) == -1) {
-		fatal("do_spawn: sigfillset failed: '%m'");
-	}
-
-	if (sigprocmask(SIG_SETMASK, &new, &orig) == -1) {
-		fatal("do_spawn: sigprocmask failed: '%m'");
-	}
-
-	pid_t pid = fork();
-	if (pid == 0) {
-		if (signal(SIGINT, SIG_DFL) == SIG_ERR ||
-		    signal(SIGTERM, SIG_DFL) == SIG_ERR ||
-		    signal(SIGQUIT, SIG_DFL) == SIG_ERR) {
-			fatal("do_spawn: signal failed: '%m'");
-		}
-
-		if (sigprocmask(SIG_SETMASK, &orig, NULL) == -1) {
-			fatal("do_spawn: sigprocmask failed: '%m'");
-		}
-
-		httpd_serve(sfd, efd);
-	}
-
-	if (sigprocmask(SIG_SETMASK, &orig, NULL) == -1) {
-		fatal("do_spawn: sigprocmask failed: '%m'");
-	}
-
-	if (pid == -1) {
-		error("do_spawn: fork failed: '%m'");
+	if ((pid = clone3(&args, sizeof(struct clone_args))) == -1) {
+		error("do_spawn: clone failed: '%m'");
 		return -1;
+	}
+
+	if (pid == 0) {
+		httpd_serve(sfd, efd);
+
+		/*
+		 * NOT REACHABLE
+		 */
+		fatal("do_loop: dead end");
 	}
 
 	info("do_spawn: %d spawned", pid);
